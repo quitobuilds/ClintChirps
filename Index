@@ -1,0 +1,169 @@
+import 'dotenv/config';
+import { TwitterClient } from './twitter';
+import { generateReply, generateSchizoTweet, shouldReply, decideResponseType } from './brain';
+import { 
+  getLastTweetId, 
+  setLastTweetId, 
+  hasRepliedTo, 
+  markReplied,
+  shouldPostSchizo,
+  setLastSchizoTime 
+} from './state';
+
+const twitter = new TwitterClient();
+
+// parse command line args
+const args = process.argv.slice(2);
+const modeArg = args.find(a => a.startsWith('--mode=') || a.startsWith('--mode '));
+const mode = modeArg?.split(/[= ]/)[1] || 'both';
+
+const TARGETS = (process.env.TARGET_ACCOUNTS || 'aeyakovenko,rajgokal,0xMert_').split(',');
+const REPLY_INTERVAL = parseInt(process.env.REPLY_INTERVAL || '120') * 1000;
+const SCHIZO_INTERVAL = parseInt(process.env.SCHIZO_INTERVAL || '3600');
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function log(message: string): void {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ${message}`);
+}
+
+async function checkAndReply(): Promise<void> {
+  log('checking for new tweets from targets...');
+  
+  for (const username of TARGETS) {
+    const sinceId = getLastTweetId(username);
+    const tweets = await twitter.getRecentTweets(username, sinceId);
+    
+    if (tweets.length === 0) {
+      log(`  @${username}: no new tweets`);
+      continue;
+    }
+    
+    log(`  @${username}: found ${tweets.length} new tweets`);
+    
+    // update last seen id
+    setLastTweetId(username, tweets[0].id);
+    
+    for (const tweet of tweets) {
+      // skip if we already replied
+      if (hasRepliedTo(tweet.id)) {
+        continue;
+      }
+      
+      const context = {
+        username,
+        text: tweet.text,
+        tweetId: tweet.id,
+      };
+      
+      // decide if we should engage
+      const shouldEngage = await shouldReply(context);
+      
+      if (!shouldEngage) {
+        log(`    skipping tweet ${tweet.id} (not worth it)`);
+        markReplied(tweet.id); // mark so we don't check again
+        continue;
+      }
+      
+      // decide how to engage
+      const responseType = await decideResponseType(context);
+      
+      if (responseType === 'skip') {
+        log(`    skipping tweet ${tweet.id} (brain said skip)`);
+        markReplied(tweet.id);
+        continue;
+      }
+      
+      // generate the response
+      const response = await generateReply(context);
+      log(`    generated ${responseType}: "${response}"`);
+      
+      // send it
+      let success: string | null = null;
+      if (responseType === 'reply') {
+        success = await twitter.reply(tweet.id, response);
+      } else if (responseType === 'quote') {
+        success = await twitter.quoteTweet(tweet.id, response);
+      }
+      
+      if (success) {
+        markReplied(tweet.id);
+        log(`    ✓ posted ${responseType} to ${tweet.id}`);
+      } else {
+        log(`    ✗ failed to post ${responseType}`);
+      }
+      
+      // don't spam - wait a bit between replies
+      await sleep(5000);
+    }
+  }
+}
+
+async function postSchizo(): Promise<void> {
+  if (!shouldPostSchizo(SCHIZO_INTERVAL)) {
+    const lastPost = new Date(require('./state').getLastSchizoTime()).toISOString();
+    log(`schizo mode: not yet (last post: ${lastPost})`);
+    return;
+  }
+  
+  log('schizo mode activated');
+  
+  const tweet = await generateSchizoTweet();
+  log(`  generated: "${tweet}"`);
+  
+  const success = await twitter.tweet(tweet);
+  
+  if (success) {
+    setLastSchizoTime(Date.now());
+    log('  ✓ posted schizo tweet');
+  } else {
+    log('  ✗ failed to post schizo tweet');
+  }
+}
+
+async function runOnce(): Promise<void> {
+  if (mode === 'reply' || mode === 'both') {
+    await checkAndReply();
+  }
+  
+  if (mode === 'schizo' || mode === 'both') {
+    await postSchizo();
+  }
+}
+
+async function runLoop(): Promise<void> {
+  log('clint is online');
+  log(`mode: ${mode}`);
+  log(`targets: ${TARGETS.join(', ')}`);
+  log(`reply check interval: ${REPLY_INTERVAL / 1000}s`);
+  log(`schizo interval: ${SCHIZO_INTERVAL}s`);
+  log(`dry run: ${process.env.DRY_RUN === 'true'}`);
+  log('---');
+  
+  while (true) {
+    try {
+      await runOnce();
+    } catch (error) {
+      log(`error in main loop: ${error}`);
+    }
+    
+    await sleep(REPLY_INTERVAL);
+  }
+}
+
+// handle graceful shutdown
+process.on('SIGINT', () => {
+  log('clint is going to sleep');
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  log('clint is going to sleep');
+  process.exit(0);
+});
+
+// start
+runLoop();
