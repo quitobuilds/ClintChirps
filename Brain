@@ -1,0 +1,183 @@
+import Anthropic from '@anthropic-ai/sdk';
+import { CLINT_PERSONA, TARGETS, SCHIZO_TOPICS, REPLY_STYLES } from './personality';
+
+const anthropic = new Anthropic();
+
+interface TweetContext {
+  username: string;
+  text: string;
+  tweetId: string;
+}
+
+function getTargetContext(username: string): string {
+  const handle = username.toLowerCase();
+  const target = TARGETS[handle as keyof typeof TARGETS];
+  
+  if (!target) {
+    return 'unknown target. be generally snarky but not too harsh.';
+  }
+
+  return `
+target: ${target.name} (${target.fullName})
+role: ${target.role}
+their quirks you can play on: ${target.quirks.join(', ')}
+topics to potentially roast: ${target.topicsToRoast.join(', ')}
+`.trim();
+}
+
+function pickRandom<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+export async function generateReply(tweet: TweetContext): Promise<string> {
+  const targetContext = getTargetContext(tweet.username);
+  const style = pickRandom(REPLY_STYLES);
+
+  const prompt = `${CLINT_PERSONA}
+
+---
+
+you need to reply to this tweet from @${tweet.username}:
+
+"${tweet.text}"
+
+context about this person:
+${targetContext}
+
+suggested style for this reply: ${style}
+
+generate a single reply tweet. remember:
+- keep it short (under 280 chars, ideally under 200)
+- lowercase unless heated
+- no emojis unless ironic
+- don't be actually mean, be clever
+- don't explain the joke
+- match clint's voice exactly
+
+respond with ONLY the tweet text, nothing else.`;
+
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 150,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = response.content[0].type === 'text' ? response.content[0].text : '';
+  
+  // clean up any quotes the model might add
+  return text.replace(/^["']|["']$/g, '').trim();
+}
+
+export async function generateSchizoTweet(): Promise<string> {
+  const topic = pickRandom(SCHIZO_TOPICS);
+  
+  const prompt = `${CLINT_PERSONA}
+
+---
+
+time to post an unprompted thought. you're in schizo mode.
+
+topic inspiration (but don't be too literal): ${topic}
+
+generate a standalone tweet. this isn't a reply to anyone, just clint sharing his thoughts with the timeline.
+
+could be:
+- a vague observation that solana people will understand
+- commentary on something that happened recently in crypto
+- a rhetorical question
+- an old man yells at cloud moment about the industry
+- a callback to old crypto lore
+- a "i've been thinking" tweet
+- subtly about one of your targets without naming them
+
+remember:
+- keep it short (under 280 chars, ideally under 200)
+- lowercase unless heated
+- no emojis unless ironic
+- it should feel like a real person's tweet, not a bot
+- no hashtags ever
+- don't make it too try-hard
+
+respond with ONLY the tweet text, nothing else.`;
+
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 150,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = response.content[0].type === 'text' ? response.content[0].text : '';
+  
+  return text.replace(/^["']|["']$/g, '').trim();
+}
+
+export async function shouldReply(tweet: TweetContext): Promise<boolean> {
+  // don't reply to every tweet - that's annoying
+  // use llm to decide if this tweet is worth engaging with
+  
+  const prompt = `you are deciding whether clint should reply to this tweet.
+
+tweet from @${tweet.username}:
+"${tweet.text}"
+
+clint should reply if:
+- the tweet is roastable (bad take, fumble, contradiction, flex, etc)
+- there's something clever to say
+- it's a moment worth commenting on
+
+clint should NOT reply if:
+- it's just a normal informational tweet
+- it's about something serious/sad
+- it's genuinely good content with nothing to roast
+- replying would be punching down or actually mean
+
+respond with ONLY "yes" or "no"`;
+
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 10,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = response.content[0].type === 'text' ? response.content[0].text.toLowerCase().trim() : 'no';
+  
+  return text.includes('yes');
+}
+
+export async function decideResponseType(tweet: TweetContext): Promise<'reply' | 'quote' | 'skip'> {
+  // sometimes a quote tweet hits different than a reply
+  
+  const prompt = `you are deciding how clint should respond to this tweet.
+
+tweet from @${tweet.username}:
+"${tweet.text}"
+
+options:
+- "reply" - respond directly in the replies
+- "quote" - quote tweet it (better for when you want your followers to see the roast)
+- "skip" - don't engage with this one
+
+quote tweets are better for:
+- particularly spicy takes that deserve wider attention
+- when the roast needs the original context to land
+- moments worth archiving
+
+replies are better for:
+- quick jabs
+- conversational engagement
+- when you don't want to seem like you're trying too hard
+
+respond with ONLY one word: "reply", "quote", or "skip"`;
+
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 10,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = response.content[0].type === 'text' ? response.content[0].text.toLowerCase().trim() : 'skip';
+  
+  if (text.includes('quote')) return 'quote';
+  if (text.includes('reply')) return 'reply';
+  return 'skip';
+}
