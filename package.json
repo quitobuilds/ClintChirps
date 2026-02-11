@@ -1,0 +1,24 @@
+{
+  "name": "clint-chirps",
+  "version": "1.0.0",
+  "description": "the solana reply guy nobody asked for",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "clint": "ts-node src/index.ts",
+    "dev": "ts-node-dev --respawn src/index.ts",
+    "reply": "ts-node src/index.ts --mode reply",
+    "schizo": "ts-node src/index.ts --mode schizo"
+  },
+  "dependencies": {
+    "anthropic": "^0.30.0",
+    "dotenv": "^16.4.5",
+    "twitter-api-v2": "^1.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.3.3"
+  }
+}
